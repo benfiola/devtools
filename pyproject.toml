@@ -1,0 +1,20 @@
+[project]
+name = "devtools"
+dependencies = [
+    "click",
+    "nuitka",
+    "packaging",
+    "pydantic",
+    "pyyaml",
+    "toml"
+]
+dynamic = ["version"]
+
+[project.scripts]
+devtools = "devtools.cli:main"
+
+[tool.setuptools.package-data]
+devtools = ["data/**/*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "devtools.__version__" }
