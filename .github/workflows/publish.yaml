@@ -23,13 +23,16 @@ jobs:
         id: main
         run: |
           pip install --no-color --progress-bar=off --editable ".[dev]"
-      - name: tag
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.git.createRef({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: 'refs/tags/${{steps.main.outputs.tag}}',
-              sha: context.sha
-            })
+          VERSION="$(devtools print-next-version)"
+          TAG="$(devtools print-next-version --flavor=git)"
+          echo "tag=${TAG}"
+      # - name: tag
+      #   uses: actions/github-script@v7
+      #   with:
+      #     script: |
+      #       github.rest.git.createRef({
+      #         owner: context.repo.owner,
+      #         repo: context.repo.repo,
+      #         ref: 'refs/tags/${{steps.main.outputs.tag}}',
+      #         sha: context.sha
+      #       })
