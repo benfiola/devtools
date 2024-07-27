@@ -19,7 +19,7 @@ def get_current_branch() -> str:
     """
     Uses the `git` command line tool to determine the current branch
     """
-    branch = run_command(["git", "branch", "--format=%(refname:short)"]).strip()
+    branch = run_command(["git", "branch", "--show-current"]).strip()
     return branch
 
 
@@ -152,10 +152,87 @@ class VersionChange:
         return int(self) < int(other)
 
 
-VersionFlavor = Literal["general"] | Literal["docker"] | Literal["git"]
+VersionFlavor = Literal["semver"] | Literal["docker"] | Literal["node"] | Literal["git"]
 
 
-class Version(packaging.version.Version):
+@functools.total_ordering
+class Maximum:
+    def __lt__(self, other: Any) -> bool:
+        if isinstance(other, Maximum):
+            return False
+        return True
+
+
+version_re = re.compile(
+    r"^(?P<major>[\d]+)"
+    r"\.(?P<minor>[\d]+)"
+    r"\.(?P<patch>[\d]+)"
+    r"(?:-(?P<pre_tag>.*)\.(?P<pre_count>[\d]+))?"
+    r"(?:\+(?P<metadata>.*))?$"
+)
+
+
+@functools.total_ordering
+class Version:
+    major: int
+    minor: int
+    patch: int
+    pre: tuple[str, int] | None
+    metadata: str | None
+
+    def __init__(
+        self,
+        major: int,
+        minor: int,
+        patch: int,
+        pre: tuple[str, int] | None = None,
+        metadata: str | None = None,
+    ):
+        self.major = major
+        self.minor = minor
+        self.patch = patch
+        self.pre = pre
+        self.metadata = metadata
+
+    def as_string(self, flavor: "VersionFlavor" = "semver") -> str:
+        if flavor == "semver":
+            semver = f"{self.major}.{self.minor}.{self.patch}"
+            if self.pre:
+                tag, count = self.pre
+                semver = f"{semver}-{tag}.{count}"
+            if self.metadata:
+                semver = f"{semver}+{self.metadata}"
+            return semver
+        elif flavor == "git":
+            semver = self.as_string(flavor="semver")
+            return f"v{semver}"
+        elif flavor == "docker":
+            semver = self.as_string(flavor="semver")
+            return semver.replace("+", "-")
+        elif flavor == "node":
+            node = f"{self.major}.{self.minor}.{self.patch}"
+            tag, count = None, None
+            if self.pre:
+                tag, count = self.pre
+            if tag:
+                node = f"{node}-{tag}"
+            if self.metadata:
+                node = f"{node}.{self.metadata}"
+            if count:
+                node = f"{node}.{count}"
+            return node
+        else:
+            raise NotImplementedError(flavor)
+
+    def __lt__(self, other: Any) -> bool:
+        if not isinstance(other, Version):
+            raise ValueError(other)
+        self_pre = self.pre or (Maximum(), Maximum())
+        other_pre = other.pre or (Maximum(), Maximum())
+        self_data = (self.major, self.minor, self.patch, *self_pre)
+        other_data = (other.major, other.minor, other.patch, *other_pre)
+        return self_data < other_data
+
     def __str__(self) -> str:
         """
         Converts a version object into a version string compatible with semver.
@@ -163,19 +240,20 @@ class Version(packaging.version.Version):
         """
         return self.as_string()
 
-    def as_string(self, flavor: "VersionFlavor" = "general") -> str:
-        major, minor, patch = self.release
-        general = f"{major}.{minor}.{patch}"
-        if self.pre:
-            tag, count = self.pre
-            general = f"{general}-{tag}.{count}"
-
-        if flavor == "general":
-            return general
-        elif flavor == "git":
-            return f"v{general}"
-        else:
-            raise NotImplementedError(flavor)
+    @classmethod
+    def from_string(cls, value: str) -> "Version":
+        match = version_re.match(value)
+        if match is None:
+            raise ValueError(value)
+        major = int(match.group("major"))
+        minor = int(match.group("minor"))
+        patch = int(match.group("patch"))
+        pre_tag = match.group("pre_tag")
+        pre_count = match.group("pre_count")
+        if pre_tag and pre_count:
+            pre = (pre_tag, int(pre_count))
+        metadata = match.group("metadata")
+        return cls(major=major, minor=minor, patch=patch, pre=pre, metadata=metadata)
 
 
 def get_version_change_from_diff(a: Version, b: Version) -> VersionChange:
@@ -187,7 +265,7 @@ def get_version_change_from_diff(a: Version, b: Version) -> VersionChange:
         return VersionChange("major")
     if a.minor != b.minor:
         return VersionChange("minor")
-    if a.micro != b.micro:
+    if a.patch != b.patch:
         return VersionChange("patch")
     return VersionChange("none")
 
@@ -248,7 +326,7 @@ def parse_versions(tags: list[str]) -> list[Version]:
         if not tag.startswith("v"):
             continue
         try:
-            version = Version(tag[1:])
+            version = Version.from_string(tag[1:])
         except packaging.version.InvalidVersion:
             continue
         to_return.append(version)
@@ -262,7 +340,9 @@ def get_repo_data() -> Version:
     If a version is not found, defaults to '0.0.0.'.
     """
     all_sorted_versions = sorted(parse_versions(get_tags()), reverse=True)
-    latest_version = all_sorted_versions[0] if all_sorted_versions else Version("0.0.0")
+    latest_version = (
+        all_sorted_versions[0] if all_sorted_versions else Version.from_string("0.0.0")
+    )
     return latest_version
 
 
@@ -274,13 +354,13 @@ def get_ancestral_data() -> tuple[Version, VersionChange]:
     for commit in get_commits():
         sorted_versions = sorted(parse_versions(commit.tags))
         for version in sorted_versions:
-            if version.is_prerelease:
+            if version.pre:
                 continue
             return version, change
         current_change = get_version_change_from_message(commit.message)
         if current_change > change:
             change = current_change
-    return Version("0.0.0"), change
+    return Version.from_string("0.0.0"), change
 
 
 def bump_version(version: Version, version_change: VersionChange) -> Version:
@@ -289,7 +369,7 @@ def bump_version(version: Version, version_change: VersionChange) -> Version:
 
     NOTE: Will always strip prerelease information.
     """
-    major, minor, patch = version.release
+    new_version = Version.clone()
     if f"{version_change}" == "major":
         major += 1
         minor = 0
@@ -325,7 +405,7 @@ def get_devtools_version(prefix: Prefix) -> str:
     return Version(devtools_version).as_string()
 
 
-def get_next_version(_: Prefix, flavor: VersionFlavor = "general") -> str:
+def get_next_version(_: Prefix, flavor: VersionFlavor = "semver") -> str:
     """
     Determines the next version of a repository by using branch rules in conjunction with
     tagged commit messages to perform version bumps.
@@ -370,6 +450,9 @@ def get_next_version(_: Prefix, flavor: VersionFlavor = "general") -> str:
                 version = bump_version(repo_version, change)
             else:
                 version = Version(repo_version.base_version)
+    if rule.add_build_metadata:
+        build_metadata = branch.replace("[^a-zA-Z0-9]+", ".")
+        version = Version(f"{version}+{build_metadata}")
     logger.info(f"version: {version}")
 
     return version.as_string(flavor=flavor)

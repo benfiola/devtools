@@ -39,7 +39,7 @@ pass_prefix = click.make_pass_decorator(Prefix)
 
 
 @click.group()
-@click.option("--log-level", type=validator(LogLevel), default="debug")
+@click.option("--log-level", type=validator(LogLevel), default="info")
 @click.option("--prefix", type=pathlib.Path, default=pathlib.Path("/tmp/devtools"))
 @click.pass_context
 def grp_main(ctx: click.Context, log_level: LogLevel, prefix: pathlib.Path):
@@ -79,7 +79,7 @@ def cmd_print_devtools_version(prefix: Prefix):
 @grp_main.command(
     "print-next-version", help="prints the next version of the current project"
 )
-@click.option("--flavor", type=validator(VersionFlavor), default="general")
+@click.option("--flavor", type=validator(VersionFlavor), default="semver")
 @pass_prefix
 def cmd_print_next_version(prefix: Prefix, *, flavor: VersionFlavor):
     version = get_next_version(prefix, flavor=flavor)

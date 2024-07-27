@@ -1,3 +1,4 @@
+import json
 import os
 import pathlib
 from typing import Literal
@@ -11,10 +12,57 @@ from .logs import get_logger
 from .prefix import Prefix
 
 logger = get_logger(__name__)
-PublishFlavor = Literal["docker"] | Literal["python"] | Literal["vsce"]
+PublishFlavor = (
+    Literal["docker"]
+    | Literal["package"]
+    | Literal["executable"]
+    | Literal["vscode-extension"]
+)
+
+ProjectType = Literal["python"] | Literal["node"]
+
+
+def determine_project_type() -> ProjectType:
+    if pathlib.Path.cwd().joinpath("pyproject.toml"):
+        return "python"
+    elif pathlib.Path.cwd().joinpath("package.json"):
+        return "node"
+    raise NotImplementedError()
+
+
+def get_project_name(project_type: ProjectType):
+    if project_type == "python":
+        pyproject_file = pathlib.Path.cwd().joinpath("pyproject.toml")
+        data = toml.loads(pyproject_file.read_text())
+        name = data["project"]["name"]
+        return name
+    elif project_type == "node":
+        package_json_file = pathlib.Path.cwd().joinpath("package.json")
+        data = json.loads(package_json_file.read_text())
+        name = data["name"]
+        return name
+    raise NotImplementedError()
+
+
+def set_project_version(project_type: ProjectType, version: str):
+    if project_type == "python":
+        pyproject_file = pathlib.Path.cwd().joinpath("pyproject.toml")
+        data = toml.loads(pyproject_file.read_text())
+        data["project"]["version"] = version
+        pyproject_file.write_text(toml.dumps(data))
+    elif project_type == "node":
+        package_json_file = pathlib.Path.cwd().joinpath("package.json")
+        data = json.loads(package_json_file.read_text())
+        data["version"] = version
+        package_json_file.write_text(json.dumps(data, indent=2))
+    raise NotImplementedError()
 
 
 def publish_github_action(prefix: Prefix, *, flavor: PublishFlavor, token: str):
+    project_type = determine_project_type()
+    version = run_command(["devtools", "print-next-version", "--flavor=git"]).strip()
+    version = run_command(["devtools", "print-next-version", "--flavor=semver"]).strip()
+
     pyproject_file = pathlib.Path.cwd().joinpath("pyproject.toml")
     if not pyproject_file.exists():
         raise RuntimeError(f"pyproject.toml not found")
